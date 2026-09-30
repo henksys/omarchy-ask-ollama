@@ -1,6 +1,8 @@
 // AskModel.js - config/history/request/response logic for the Ask panel.
-// Mirrors the JSON handling of the bash version of `ask` (which used python3
-// heredocs). All functions are pure JS so the QML UI stays about drawing.
+// All functions are pure JS so the QML UI stays about drawing.
+// The API layer targets Ollama's native REST API (/api/chat, /api/tags),
+// which is served both by a local Ollama daemon and by https://ollama.com
+// for cloud models.
 
 // Strip `//` comment lines from the JSONC config file. Comments must be on
 // their own line (same rule as the bash version).
@@ -24,23 +26,23 @@ function parseConfig(text) {
   }
 }
 
-// The same defaults the bash version writes on first run.
+// The defaults written on first run.
 function defaultConfig() {
   return {
     role: "You are a helpful assistant.",
-    model: "deepseek-flash",
+    model: "",
     temperature: 0.4,
     top_p: 0.9,
     thinking: "enabled",
-    reasoning_effort: "low",
+    num_ctx: 0,
     response_format: "text",
     save_history: "y",
-    screensize: "medium"
+    screensize: "medium",
+    host: "http://localhost:11434"
   }
 }
 
-// Serialize a config object back to plain JSON text. Written without // 
-// comments; the bash version parses it fine (it just strips comment lines).
+// Serialize a config object back to plain JSON text.
 function serializeConfig(cfg) {
   return JSON.stringify(cfg, null, 2) + "\n"
 }
@@ -95,8 +97,8 @@ function parseThreads(text) {
   return threads
 }
 
-// Build the API `messages` array: system role, then history, then the
-// new user question. Same shape as the bash version.
+// Build the `messages` array: system role, then history, then the new user
+// question.
 function buildMessages(cfg, history, question) {
   var messages = []
   var role = String(cfg.role || "").trim()
@@ -109,27 +111,31 @@ function buildMessages(cfg, history, question) {
   return messages
 }
 
-// Build the DeepSeek request body from the config and messages.
+// Build the native Ollama request body from the config and messages.
+// `stream: false` asks for a single JSON response instead of NDJSON.
 function buildRequest(cfg, messages) {
   function num(v, fallback) {
     var n = parseFloat(v)
     return isNaN(n) ? fallback : n
   }
-  var thinking = { type: String(cfg.thinking || "enabled") }
-  if (thinking.type === "enabled") {
-    thinking.reasoning_effort = String(cfg.reasoning_effort || "high")
+  var options = {
+    temperature: num(cfg.temperature, 0.4),
+    top_p: num(cfg.top_p, 0.9)
   }
-  return {
-    model: String(cfg.model || "deepseek-flash"),
+  var nctx = parseInt(cfg.num_ctx, 10)
+  if (!isNaN(nctx) && nctx > 0) options.num_ctx = nctx
+  var req = {
+    model: String(cfg.model || ""),
     messages: messages,
-    temperature: num(cfg.temperature, 1),
-    top_p: num(cfg.top_p, 1),
-    thinking: thinking,
-    response_format: { type: String(cfg.response_format || "text") }
+    stream: false,
+    think: String(cfg.thinking || "enabled").toLowerCase() !== "disabled",
+    options: options
   }
+  if (String(cfg.response_format || "text") === "json_object") req.format = "json"
+  return req
 }
 
-// Parse the raw API response body.
+// Parse the raw /api/chat response body.
 // Returns one of:
 //   { answer: "..." }
 //   { error: "..." }
@@ -139,15 +145,13 @@ function parseResponse(raw) {
   try {
     data = JSON.parse(raw)
   } catch (e) {
-    return { error: "Invalid response from API:\n" + raw }
+    return { error: "Invalid response from Ollama:\n" + raw }
   }
-  if (data && Array.isArray(data.choices) && data.choices.length > 0) {
-    var content = data.choices[0].message && data.choices[0].message.content
-    if (typeof content === "string") return { answer: content }
-    return { error: "API response had no text content." }
+  if (data && data.message && typeof data.message.content === "string") {
+    return { answer: data.message.content }
   }
   if (data && data.error) {
-    return { error: "API error: " + (data.error.message || JSON.stringify(data.error)) }
+    return { error: "Ollama error: " + String(data.error) }
   }
   return { unexpected: data }
 }
