@@ -38,7 +38,8 @@ function defaultConfig() {
     response_format: "text",
     save_history: "y",
     screensize: "medium",
-    host: "http://localhost:11434"
+    host: "http://localhost:11434",
+    mode: "local"
   }
 }
 

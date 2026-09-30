@@ -20,6 +20,8 @@ Item {
   readonly property string home: Quickshell.env("HOME")
   readonly property string configDir: home + "/.config/ask-ollama"
   readonly property string configFile: configDir + "/config"
+  readonly property string keyFile: configDir + "/key"
+  readonly property string headerFile: configDir + "/.header"
   readonly property string historyDir: home + "/.local/share/ask-ollama"
   readonly property string historyFile: historyDir + "/history.jsonl"
 
@@ -58,13 +60,23 @@ Item {
   property string s_screensize: "medium"
 
   // Connection tab state.
+  property string s_mode: "local"
   property string s_host: ""
   property string connectionStatus: ""
   property bool connTesting: false
   property bool connDone: false
+  property string s_api_key: ""
+  property string apiKeyStatus: ""
+  property string apiKeyFlashText: ""
+  property bool apiKeyReadDone: false
+  property bool keyReadDone: false
   property string _pendingConfig: ""
   property string _pendingHistory: ""
   property string _pendingBody: ""
+  property string _pendingHeader: ""
+  property string _pendingKey: ""
+  property string _pendingRequestType: ""
+  property string _pendingShowModel: ""
 
   // Model list state (fetched live from the Ollama /api/tags endpoint).
   // modelMeta maps a model name to { capabilities, context_length }.
@@ -72,6 +84,8 @@ Item {
   property var modelMeta: ({})
   property bool modelLoading: false
   property string modelsError: ""
+
+  readonly property string cloudBaseUrl: "https://ollama.com"
 
   readonly property bool saveHistory: String(root.config.save_history || "n").toLowerCase() === "y"
 
@@ -335,29 +349,66 @@ Item {
     // as a command-line argument. curl enforces connect/time/size limits so
     // a stalled or oversized response cannot hang the shell.
     root._pendingBody = root.buildRequestBody(root.lastQuestion)
-    root.launchChatRequest()
+    if (root.effectiveMode() === "cloud") {
+      // Cloud needs auth: read the key, write the Authorization header file
+      // (0600, over stdin), then let headerWriteProc launch the request.
+      root.keyReadDone = false
+      keyReadProc.command = root.safeReadCommand(root.keyFile, 4096)
+      keyReadProc.running = true
+    } else {
+      root.launchChatRequest()
+    }
   }
 
-  // A model whose capabilities lack "thinking" must not be asked to think.
+  function onKeyRead(text) {
+    if (root.keyReadDone) return
+    root.keyReadDone = true
+    var key = String(text || "").trim()
+    if (!key) {
+      root.busy = false
+      root.setLastAnswer("No API key set. Open the Connection tab and save your Ollama Cloud API key.", true)
+      Qt.callLater(function() { inputField.forceActiveFocus() })
+      return
+    }
+    root._pendingHeader = "Authorization: Bearer " + key
+    root._pendingRequestType = "chat"
+    headerWriteProc.stdinEnabled = true
+    headerWriteProc.command = root.secureWriteStdinCommand(root.configDir, root.headerFile)
+    headerWriteProc.running = true
+  }
+
+  // A model whose capabilities lack "thinking" must not be asked to think;
+  // num_ctx is a local-only option and is omitted in cloud mode.
   function buildRequestBody(question) {
     var history = root.saveHistory ? AskModel.parseHistory(root._historyText) : []
     var msgs = AskModel.buildMessages(root.config, history, question)
     var cfg = root.config
-    if (!root.thinkingSupportedFor(cfg.model)) {
+    var noThink = !root.thinkingSupportedFor(cfg.model)
+    var cloud = root.effectiveMode() === "cloud"
+    if (noThink || cloud) {
       cfg = {}
       for (var k in root.config) cfg[k] = root.config[k]
-      cfg.thinking = "disabled"
+      if (noThink) cfg.thinking = "disabled"
+      if (cloud) cfg.num_ctx = 0
     }
     return JSON.stringify(AskModel.buildRequest(cfg, msgs))
   }
 
   function launchChatRequest() {
     apiProc.stdinEnabled = true
-    apiProc.command = [
-      "bash", "-c",
-      "curl -s --connect-timeout 10 --max-time 300 --max-filesize 10485760 --proto '=http,https' -H 'Content-Type: application/json' \"$1/api/chat\" -d @-",
-      "bash", root.baseUrl()
-    ]
+    if (root.effectiveMode() === "cloud") {
+      apiProc.command = [
+        "bash", "-c",
+        "curl -s --connect-timeout 10 --max-time 300 --max-filesize 10485760 --proto '=https' -H \"@$2\" -H 'Content-Type: application/json' \"$1/api/chat\" -d @-",
+        "bash", root.baseUrl(), root.headerFile
+      ]
+    } else {
+      apiProc.command = [
+        "bash", "-c",
+        "curl -s --connect-timeout 10 --max-time 300 --max-filesize 10485760 --proto '=http,https' -H 'Content-Type: application/json' \"$1/api/chat\" -d @-",
+        "bash", root.baseUrl()
+      ]
+    }
     apiProc.running = true
     apiWatchdog.restart()
   }
@@ -449,7 +500,8 @@ Item {
       response_format: root.s_response_format,
       save_history: root.s_save_history ? "y" : "n",
       screensize: root.s_screensize,
-      host: String(root.config.host || "http://localhost:11434")
+      host: String(root.config.host || "http://localhost:11434"),
+      mode: root.effectiveMode()
     }
     root.writeConfig(true)
     root.loadHistoryIfEnabled()
@@ -499,12 +551,21 @@ Item {
     return ""
   }
 
+  // Effective mode: "cloud" only when explicitly configured, otherwise local.
+  function effectiveMode() {
+    return String(root.config.mode || "local") === "cloud" ? "cloud" : "local"
+  }
+
+  // The base URL for API calls: the fixed ollama.com base in cloud mode, the
+  // configured (and validated) host otherwise.
   function baseUrl() {
+    if (root.effectiveMode() === "cloud") return root.cloudBaseUrl
     return root.normalizeHost(root.config.host)
   }
 
-  // A model whose /api/tags entry lacks the "thinking" capability must not
-  // be asked to think. Unknown metadata (older daemons) is treated as capable.
+  // A model whose /api/tags (or /api/show) entry lacks the "thinking"
+  // capability must not be asked to think. Unknown metadata is treated as
+  // capable, so an unprobed model can still be used.
   function thinkingSupportedFor(name) {
     var m = root.modelMeta[String(name || "")]
     if (!m || !Array.isArray(m.capabilities) || m.capabilities.length === 0) return true
@@ -516,36 +577,93 @@ Item {
   // ---- Connection tab ----
 
   function loadConnectionSettings() {
+    root.s_mode = root.effectiveMode()
     root.s_host = String(root.config.host || "http://localhost:11434")
+    root.connectionStatus = ""
+    root.connDone = false
+    root.connTesting = false
+    // Read the stored key first so Test and Save act on the current value.
+    root.apiKeyReadDone = false
+    apiKeyReadProc.command = root.safeReadCommand(root.keyFile, 4096)
+    apiKeyReadProc.running = true
+  }
+
+  function onApiKeyFileRead(text) {
+    if (root.apiKeyReadDone) return
+    root.apiKeyReadDone = true
+    root.s_api_key = String(text || "").trim()
     root.testConnection()
   }
 
-  function saveHost() {
-    var err = root.hostError(root.s_host)
-    if (err !== "") {
-      root.connectionStatus = err
-      return false
+  function saveConnection() {
+    if (root.s_mode === "local") {
+      var err = root.hostError(root.s_host)
+      if (err !== "") {
+        root.connectionStatus = err
+        return false
+      }
+      root.s_host = root.normalizeHost(root.s_host)
     }
-    root.s_host = root.normalizeHost(root.s_host)
     var cfg = {}
     for (var k in root.config) cfg[k] = root.config[k]
-    cfg.host = root.s_host
+    cfg.mode = root.s_mode
+    if (root.s_mode === "local") cfg.host = root.s_host
     root.config = cfg
     root.writeConfig(true)
+    root.loadModels()
     return true
   }
 
-  // Fetch /api/version, then POST /api/me for the sign-in state; both come
-  // back as JSON lines on stdout. No secrets are involved.
+  function saveApiKey() {
+    var key = String(root.s_api_key || "").trim()
+    if (key === "") {
+      root.apiKeyStatus = "Enter an API key first."
+      return
+    }
+    root._pendingKey = key
+    keyWriteProc.stdinEnabled = true
+    keyWriteProc.command = root.secureWriteStdinCommand(root.configDir, root.keyFile)
+    keyWriteProc.running = true
+    root.apiKeyStatus = "Saved to " + root.keyFile + " with owner-only permissions (600)."
+    root.apiKeyFlashText = "Saved"
+    apiKeyTimer.restart()
+  }
+
+  function removeApiKey() {
+    root.s_api_key = ""
+    clearProc.command = ["sh", "-c", 'rm -f "$1"', "sh", root.keyFile]
+    clearProc.running = true
+    root.apiKeyStatus = "Stored key removed."
+    root.apiKeyFlashText = "Removed"
+    apiKeyTimer.restart()
+  }
+
+  // Cloud: /api/tags confirms reachability and /api/me (with the key) reports
+  // the account. Local: /api/version plus the daemon's sign-in state.
   function testConnection() {
+    root.connTesting = true
+    root.connDone = false
+    if (root.s_mode === "cloud") {
+      root.connectionStatus = "Testing " + root.cloudBaseUrl + " ..."
+      var key = String(root.s_api_key || "").trim()
+      if (key !== "") {
+        root._pendingHeader = "Authorization: Bearer " + key
+        root._pendingRequestType = "connection"
+        headerWriteProc.stdinEnabled = true
+        headerWriteProc.command = root.secureWriteStdinCommand(root.configDir, root.headerFile)
+        headerWriteProc.running = true
+        return
+      }
+      root.launchConnRequest("")
+      return
+    }
     var err = root.hostError(root.s_host)
     if (err !== "") {
+      root.connTesting = false
       root.connectionStatus = err
       return
     }
     var host = root.normalizeHost(root.s_host)
-    root.connTesting = true
-    root.connDone = false
     root.connectionStatus = "Testing " + host + " ..."
     connProc.command = [
       "bash", "-c",
@@ -555,11 +673,48 @@ Item {
     connProc.running = true
   }
 
+  // $1 = "" for keyless, otherwise the 0600 header file path to authenticate.
+  function launchConnRequest(headerPath) {
+    var useHeader = headerPath !== "" && headerPath !== undefined && headerPath !== null
+    if (useHeader) {
+      connProc.command = [
+        "bash", "-c",
+        "u=\"${1%/}\"; t=$(curl -s --connect-timeout 3 --max-time 6 --proto '=https' \"$u/api/tags\" 2>/dev/null) || true; if [ -z \"$t\" ]; then exit 7; fi; printf '%s\\n' \"$t\"; curl -s --connect-timeout 3 --max-time 6 --proto '=https' -H \"@$2\" -X POST \"$u/api/me\" 2>/dev/null || true",
+        "bash", root.cloudBaseUrl, String(headerPath)
+      ]
+    } else {
+      connProc.command = [
+        "bash", "-c",
+        "u=\"${1%/}\"; t=$(curl -s --connect-timeout 3 --max-time 6 --proto '=https' \"$u/api/tags\" 2>/dev/null) || true; if [ -z \"$t\" ]; then exit 7; fi; printf '%s\\n' \"$t\"",
+        "bash", root.cloudBaseUrl
+      ]
+    }
+    connProc.running = true
+  }
+
   function onConnectionTest(text) {
     if (root.connDone) return
     root.connDone = true
     root.connTesting = false
     var lines = String(text || "").split("\n")
+    if (root.s_mode === "cloud") {
+      var tags = null
+      try { tags = JSON.parse(lines[0]) } catch (e) { tags = null }
+      if (!tags || !Array.isArray(tags.models)) {
+        root.connectionStatus = "Cannot reach " + root.cloudBaseUrl + " — check your connection."
+        return
+      }
+      var me = null
+      try { me = JSON.parse(lines[1] || "") } catch (e) { me = null }
+      var name = me ? String(me.Name || me.name || me.Email || me.email || "") : ""
+      var plan = me ? String(me.Plan || me.plan || "") : ""
+      if (name !== "") {
+        root.connectionStatus = "Connected to " + root.cloudBaseUrl + " — signed in as " + name + (plan ? " (" + plan + ")" : "")
+      } else {
+        root.connectionStatus = root.cloudBaseUrl + " reachable — " + tags.models.length + " models listed. Save an API key to chat."
+      }
+      return
+    }
     var ver = null
     try { ver = JSON.parse(lines[0]) } catch (e) { ver = null }
     if (!ver || typeof ver.version !== "string") {
@@ -567,10 +722,10 @@ Item {
       return
     }
     var status = "Ollama " + ver.version + " at " + root.baseUrl()
-    var me = null
-    try { me = JSON.parse(lines[1] || "") } catch (e) { me = null }
-    if (me && (me.email || me.name)) {
-      status += " — signed in as " + String(me.name || me.email) + (me.plan ? " (" + String(me.plan) + ")" : "")
+    var meLocal = null
+    try { meLocal = JSON.parse(lines[1] || "") } catch (e) { meLocal = null }
+    if (meLocal && (meLocal.email || meLocal.name)) {
+      status += " — signed in as " + String(meLocal.name || meLocal.email) + (meLocal.plan ? " (" + String(meLocal.plan) + ")" : "")
     } else {
       status += " — not signed in (cloud models need ollama signin)"
     }
@@ -601,6 +756,7 @@ Item {
   function onModelsResponse(text) {
     root.modelLoading = false
     modelsWatchdog.stop()
+    var localMode = root.effectiveMode() === "local"
     var opts = []
     var meta = {}
     try {
@@ -617,7 +773,8 @@ Item {
             capabilities: caps,
             context_length: (m.details && parseInt(m.details.context_length, 10)) || 0
           }
-          var isCloud = !!(m.remote_host || m.remote_model)
+          // Only local mode mixes cloud entries into the daemon's model list.
+          var isCloud = localMode && !!(m.remote_host || m.remote_model)
           opts.push({ value: name, label: isCloud ? name + " (cloud)" : name })
         }
       }
@@ -625,15 +782,17 @@ Item {
       opts = []
     }
     if (opts.length === 0) {
-      root.modelsError = "No Ollama models found. Pull one with ollama pull <model>."
+      root.modelsError = localMode
+        ? "No Ollama models found. Pull one with ollama pull <model>."
+        : "Could not fetch the model list from " + root.cloudBaseUrl + "."
       root.modelOptions = root.fallbackModelOptions()
       root.modelMeta = {}
       return
     }
     root.modelMeta = meta
     root.modelOptions = opts
-    // Keep the configured model when it is installed; otherwise select the
-    // first available one so the Ask tab works without a Settings visit.
+    // Keep the configured model when it is available; otherwise select the
+    // first one so the Ask tab works without a Settings visit.
     var current = safeModelId(root.s_model || root.config.model)
     var found = false
     for (var j = 0; j < opts.length; j++) if (opts[j].value === current) found = true
@@ -644,6 +803,52 @@ Item {
       cfg.model = root.s_model
       root.config = cfg
     }
+    root.loadModelInfo(safeModelId(root.s_model || root.config.model))
+  }
+
+  // Cloud mode: /api/tags carries no capabilities, but /api/show is public
+  // and reports them (plus the context length). Fetch it for the selected
+  // model so the Thinking toggle can be gated exactly like local mode.
+  function loadModelInfo(model) {
+    var id = safeModelId(model)
+    if (id === "" || root.effectiveMode() !== "cloud") return
+    root._pendingShowModel = id
+    var body = JSON.stringify({ model: id })
+    showProc.command = [
+      "bash", "-c",
+      "curl -s --connect-timeout 10 --max-time 30 --max-filesize 1048576 --proto '=https' -H 'Content-Type: application/json' --data \"$2\" \"$1/api/show\"",
+      "bash", root.cloudBaseUrl, body
+    ]
+    showProc.running = true
+  }
+
+  function contextLengthFromShow(data) {
+    if (!data || !data.model_info) return 0
+    for (var k in data.model_info) {
+      if (k.length > 15 && k.lastIndexOf(".context_length") === k.length - 15) {
+        var v = parseInt(data.model_info[k], 10)
+        if (!isNaN(v) && v > 0) return v
+      }
+    }
+    return 0
+  }
+
+  function onShowResponse(text) {
+    var model = root._pendingShowModel
+    if (model === "") return
+    var data = null
+    try { data = JSON.parse(text) } catch (e) { data = null }
+    if (!data || !Array.isArray(data.capabilities)) return
+    var meta = {}
+    for (var k in root.modelMeta) meta[k] = root.modelMeta[k]
+    meta[model] = {
+      capabilities: data.capabilities,
+      context_length: root.contextLengthFromShow(data)
+    }
+    root.modelMeta = meta
+    // Switching to a model without the thinking capability turns the toggle
+    // off, matching what the local `/api/tags` metadata path does.
+    if (model === root.s_model && !root.thinkingSupportedFor(model)) root.s_thinking = false
   }
 
   // ---- IO processes ----
@@ -671,6 +876,28 @@ Item {
   }
 
   Process {
+    id: keyReadProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onKeyRead(String(text || ""))
+    }
+    onExited: function(code) {
+      if (code !== 0 && !root.keyReadDone) root.onKeyRead("")
+    }
+  }
+
+  Process {
+    id: apiKeyReadProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onApiKeyFileRead(String(text || ""))
+    }
+    onExited: function(code) {
+      if (code !== 0 && !root.apiKeyReadDone) root.onApiKeyFileRead("")
+    }
+  }
+
+  Process {
     id: modelsProc
     stdout: StdioCollector {
       waitForEnd: true
@@ -683,6 +910,18 @@ Item {
         root.modelsError = "Could not fetch the model list from " + root.baseUrl() + "."
         root.modelOptions = root.fallbackModelOptions()
       }
+    }
+  }
+
+  Process {
+    id: showProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onShowResponse(String(text || ""))
+    }
+    onExited: function(code) {
+      // Empty handler: a Process without any signal handler is not reliably
+      // started, so keep this hook to guarantee the fetch actually runs.
     }
   }
 
@@ -738,6 +977,41 @@ Item {
     onStarted: function() {
       configWriteProc.write(root._pendingConfig)
       configWriteProc.stdinEnabled = false
+    }
+  }
+
+  Process {
+    id: keyWriteProc
+    stdinEnabled: true
+    onStarted: function() {
+      keyWriteProc.write(root._pendingKey)
+      keyWriteProc.stdinEnabled = false
+    }
+  }
+
+  Process {
+    id: headerWriteProc
+    stdinEnabled: true
+    onStarted: function() {
+      headerWriteProc.write(root._pendingHeader)
+      headerWriteProc.stdinEnabled = false
+    }
+    onExited: function(code) {
+      var t = root._pendingRequestType
+      root._pendingRequestType = ""
+      if (code !== 0) {
+        if (t === "connection") {
+          root.connTesting = false
+          root.connectionStatus = "Could not prepare the request."
+        } else {
+          root.busy = false
+          root.setLastAnswer("Could not prepare the request.", true)
+          Qt.callLater(function() { inputField.forceActiveFocus() })
+        }
+        return
+      }
+      if (t === "connection") root.launchConnRequest(root.headerFile)
+      else root.launchChatRequest()
     }
   }
 
@@ -832,6 +1106,12 @@ Item {
       root.modelsError = "Could not fetch the model list (timed out)."
       root.modelOptions = root.fallbackModelOptions()
     }
+  }
+
+  Timer {
+    id: apiKeyTimer
+    interval: 1600
+    onTriggered: root.apiKeyFlashText = ""
   }
 
   // ---- Window ----
@@ -1205,7 +1485,11 @@ Item {
                     anchors.right: modelsRefreshButton.left
                     anchors.rightMargin: Style.spacing.xxl
                     anchors.verticalCenter: parent.verticalCenter
-                    onChanged: function(v) { root.s_model = v }
+                    onChanged: function(v) {
+                      root.s_model = v
+                      root.loadModelInfo(v)
+                      if (!root.thinkingSupportedFor(v)) root.s_thinking = false
+                    }
                   }
                 }
 
@@ -1260,6 +1544,8 @@ Item {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     placeholderText: "model default"
+                    enabled: root.effectiveMode() !== "cloud"
+                    opacity: root.effectiveMode() === "cloud" ? 0.5 : 1
                     inputMethodHints: Qt.ImhDigitsOnly
                     validator: RegularExpressionValidator { regularExpression: /^\d{0,7}$/ }
                     onTextEdited: root.s_num_ctx_text = text
@@ -1273,6 +1559,16 @@ Item {
                 }
 
                 Text {
+                  visible: root.effectiveMode() === "cloud"
+                  width: parent.width
+                  wrapMode: Text.Wrap
+                  text: "num_ctx applies to local models only."
+                  color: Qt.darker(root.foreground, 1.4)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
                   visible: {
                     var info = root.modelMeta[root.s_model]
                     return info !== undefined && info.context_length > 0
@@ -1282,7 +1578,10 @@ Item {
                   text: {
                     var info = root.modelMeta[root.s_model]
                     var max = (info && info.context_length) ? info.context_length : 0
-                    return max > 0 ? "This model supports up to " + max + " tokens. Blank keeps the model default." : ""
+                    if (max <= 0) return ""
+                    return root.effectiveMode() === "cloud"
+                      ? "This model supports up to " + max + " tokens."
+                      : "This model supports up to " + max + " tokens. Blank keeps the model default."
                   }
                   color: Qt.darker(root.foreground, 1.4)
                   font.family: Style.font.family
@@ -1498,13 +1797,44 @@ Item {
                 Text {
                   width: parent.width
                   wrapMode: Text.Wrap
-                  text: "The Ollama server to talk to. Defaults to a local Ollama install at http://localhost:11434."
+                  text: "Choose where the panel talks to. Local uses your own Ollama server; Cloud talks directly to ollama.com and needs no local install. Save applies the selected mode."
                   color: Qt.darker(root.foreground, 1.4)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                 }
 
+                Item {
+                  width: parent.width
+                  height: Style.spacing.controlHeight
+                  Text {
+                    text: "Mode"
+                    color: Qt.darker(root.foreground, 1.4)
+                    font.family: Style.font.family
+                    font.pointSize: 9
+                    font.bold: true
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                  Dropdown {
+                    width: Style.space(220)
+                    height: Style.spacing.controlHeight
+                    value: root.s_mode
+                    options: [
+                      { value: "local", label: "Local" },
+                      { value: "cloud", label: "Cloud" }
+                    ]
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    onChanged: function(v) {
+                      root.s_mode = v
+                      root.connectionStatus = ""
+                    }
+                  }
+                }
+
+                // Local mode: the server to talk to.
                 Column {
+                  visible: root.s_mode !== "cloud"
                   width: parent.width
                   spacing: Style.spacing.labelGap
                   Text {
@@ -1521,7 +1851,32 @@ Item {
                     placeholderText: "http://localhost:11434"
                     onTextEdited: root.s_host = text
                     onAccepted: {
-                      if (root.saveHost()) root.testConnection()
+                      if (root.saveConnection()) root.testConnection()
+                    }
+                  }
+                }
+
+                // Cloud mode: the API key from ollama.com/settings/keys.
+                Column {
+                  visible: root.s_mode === "cloud"
+                  width: parent.width
+                  spacing: Style.spacing.labelGap
+                  Text {
+                    text: "Ollama Cloud API key"
+                    color: Qt.darker(root.foreground, 1.4)
+                    font.family: Style.font.family
+                    font.pointSize: 9
+                    font.bold: true
+                  }
+                  TextField {
+                    id: apiKeyField
+                    width: parent.width
+                    text: root.s_api_key
+                    placeholderText: "ollama.com/settings/keys"
+                    password: true
+                    onTextEdited: root.s_api_key = text
+                    onAccepted: {
+                      if (root.saveConnection()) root.testConnection()
                     }
                   }
                 }
@@ -1531,22 +1886,47 @@ Item {
                   height: Style.spacing.controlHeight
 
                   Button {
-                    id: saveHostButton
+                    id: saveConnectionButton
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Save host"
+                    text: "Save"
                     fontFamily: Style.font.family
                     fontSize: Style.font.body
                     focusable: true
                     onClicked: {
-                      if (root.saveHost()) root.testConnection()
+                      if (!root.saveConnection()) return
+                      if (root.s_mode === "cloud" && String(root.s_api_key).trim() !== "") root.saveApiKey()
+                      root.testConnection()
                     }
                   }
 
                   Button {
-                    id: testConnectionButton
-                    anchors.left: saveHostButton.right
+                    id: removeKeyButton
+                    visible: root.s_mode === "cloud"
+                    anchors.left: saveConnectionButton.right
                     anchors.leftMargin: Style.spacing.xxl
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Remove stored key"
+                    fontFamily: Style.font.family
+                    fontSize: Style.font.body
+                    focusable: true
+                    onClicked: root.removeApiKey()
+                  }
+
+                  Text {
+                    visible: root.apiKeyFlashText !== ""
+                    text: root.apiKeyFlashText
+                    color: Style.selectedStateColor(root.foreground, root.accent)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    anchors.left: removeKeyButton.right
+                    anchors.leftMargin: Style.spacing.xxl
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  Button {
+                    id: testConnectionButton
+                    anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.connTesting ? "Testing..." : "Test connection"
                     fontFamily: Style.font.family
@@ -1573,7 +1953,7 @@ Item {
                 Text {
                   width: parent.width
                   wrapMode: Text.Wrap
-                  text: "Cloud models are used through the same local server once you are signed in with ollama signin. Direct access to ollama.com without a local install will come in a later version."
+                  text: "Local mode uses your own Ollama server at the host above. Cloud mode talks directly to ollama.com and works without a local install; usage follows your ollama.com plan (free plans have limits). Local-only options such as num_ctx, ollama signin and running-model control do not apply in cloud mode. Your API key is stored in " + root.keyFile + " with owner-only permissions (600)."
                   color: Qt.darker(root.foreground, 1.4)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -1692,7 +2072,7 @@ Item {
                   Text {
                     width: parent.width
                     wrapMode: Text.Wrap
-                    text: "- Configurable Ollama host (Connection tab), localhost by default"
+                    text: "- Local or cloud mode (Connection tab): your own Ollama server, or ollama.com with an API key and no local install"
                     color: Qt.darker(root.foreground, 1.4)
                     font.family: Style.font.family
                     font.pixelSize: Style.font.body

@@ -2,16 +2,19 @@
 
 ### Ask Ollama
 
-**Current Version:** 1.0.0
+**Current Version:** 1.1.0
 
 Chat with Ollama from your desktop — ask a question and get an answer in a pane
 that appears in the middle of your screen, with the conversation shown as a
-scrollable thread. Works with local models, and with cloud models once you are
-signed in to ollama.com (`ollama signin`). This plugin is mostly useful for
-when you suddenly have a question and want a quick answer.
+scrollable thread. Works in two modes: **Local** talks to your own Ollama
+server (local and cloud models signed in with `ollama signin`), **Cloud**
+talks directly to ollama.com with an API key and works without a local Ollama
+install. This plugin is mostly useful for when you suddenly have a question
+and want a quick answer.
 
-Note: To make use of this plugin you need Ollama installed and running. The
-Connections tab defaults to `http://localhost:11434`.
+Note: Local mode requires Ollama installed and running (default host
+`http://localhost:11434`). Cloud mode only needs an API key from
+[ollama.com/settings/keys](https://ollama.com/settings/keys).
 
 Some features:
 
@@ -19,9 +22,9 @@ Some features:
 - Selectable messages: drag with left-mouse button to select part or all of a message to copy it to the clipboard; double-click selects the whole message
 - Optional conversation history for follow-up context
 - When history is enabled in the settings, You can clear history in the chat panel at anytime to start with fresh context.
-- Live model list from Ollama (Settings - Refresh), including cloud entries marked `(cloud)`. Set the model you prefer.
-- Options like role, Temperature, Thinking (for models that support it) and num_ctx can be set to your liking
-- Configurable Ollama host in the Connection tab (local or remote)
+- Live model list (Settings - Refresh); in Local mode cloud entries are marked `(cloud)`
+- Options like role, Temperature, Thinking (for models that support it) and num_ctx (local mode) can be set to your liking
+- Local or Cloud mode in the Connection tab: your own Ollama host, or ollama.com with an API key
 
 ## Install
 
@@ -56,8 +59,8 @@ Opens from the panel header. You can change:
 
 - **Role / system prompt**
 - **Model** (fetched live from Ollama's `/api/tags`; use **Refresh** to update the list)
-- **Thinking** (disabled automatically for models whose capabilities lack `thinking`)
-- **Context length (num_ctx)**, blank keeps the model default
+- **Thinking** (disabled automatically for models whose capabilities lack `thinking`; in Cloud mode capabilities are read from the public `/api/show` endpoint)
+- **Context length (num_ctx)**, blank keeps the model default (Local mode only)
 - **Temperature** and **Top P**
 - **Output format** (text or json_object)
 - **Save conversation history** (on/off)
@@ -68,17 +71,29 @@ Changes are saved to `~/.config/ask-ollama/config` and apply immediately.
 
 ### Connection tab
 
-Shows and edits the Ollama host (default `http://localhost:11434`). **Test
-connection** reports the daemon version and whether you are signed in to
-ollama.com. Cloud models require a one-time `ollama signin`; after that they
-appear in the model list marked `(cloud)` and run through the same local
-server.
+Pick the **Mode** and press **Save**:
+
+- **Local**: use the configured Ollama host (default `http://localhost:11434`).
+  **Test connection** reports the daemon version and, when signed in, the
+  ollama.com account. Cloud models appear in the model list marked `(cloud)`
+  after a one-time `ollama signin`.
+- **Cloud**: talks directly to `https://ollama.com` and works without a local
+  Ollama install. Paste an API key from
+  [ollama.com/settings/keys](https://ollama.com/settings/keys) and press
+  **Save** (the key is stored at `~/.config/ask-ollama/key`, owner-only 600).
+  **Test connection** reports the signed-in account and plan. Model browsing
+  works without a key; chat needs one.
+
+Cloud usage follows your ollama.com plan (free plans have limits). Local-only
+options such as `num_ctx`, `ollama signin` and running-model control do not
+apply in Cloud mode.
 
 ## Configuration
 
 | File | Purpose |
 |------|---------|
 | `~/.config/ask-ollama/config` | Settings (JSON, editable in the panel or by hand) |
+| `~/.config/ask-ollama/key` | Ollama Cloud API key (owner-only 600, optional) |
 | `~/.local/share/ask-ollama/history.jsonl` | Conversation history (JSONL, one message per line) |
 
 ## Remove
@@ -96,7 +111,8 @@ omarchy plugin update io.github.henksys.ask-ollama
 ## Requirements
 
 - Omarchy (Hyprland + quickshell). Tested with Omarchy Quattro.
-- Ollama installed and running (local models; cloud models need `ollama signin`)
+- Local mode: Ollama installed and running
+- Cloud mode: an API key from ollama.com/settings/keys, no local install needed
 - curl (used for the Ollama API calls)
 - python3 (descriptor-based safe file reads)
 
@@ -108,15 +124,18 @@ omarchy plugin update io.github.henksys.ask-ollama
 
 ## Security
 
-- No API keys are stored in this version. Requests go to the Ollama host you
-  configure; `http://` is accepted only for loopback hosts, remote hosts must
-  use `https://`. Requests never follow redirects.
+- In Cloud mode the API key is stored in `~/.config/ask-ollama/key` (owner-only
+  600) and handed to curl through a 0600 header file written over stdin; it is
+  never passed as a command-line argument or placed in the environment. Cloud
+  requests are HTTPS-only and never follow redirects. In Local mode requests go
+  to the configured host; `http://` is accepted only for loopback hosts.
 - Request bodies are sent to curl over stdin, never as command-line arguments.
 - Requests enforce strict limits: connect timeout 10s, transfer timeout 300s
-  (chat) / 30s (models), and a hard response-size cap (10 MiB chat / 1 MiB
-  models). Timed-out, oversized, and truncated responses are rejected.
+  (chat) / 30s (models) / 6s (connection test), and a hard response-size cap
+  (10 MiB chat / 1 MiB models). Timed-out, oversized, and truncated responses
+  are rejected.
 - Private files (`~/.config/ask-ollama/` and `~/.local/share/ask-ollama/`) are
-  kept at 0700 and their config/history files at 0600. Reads use a
+  kept at 0700 and their config/history/key files at 0600. Reads use a
   descriptor-based check (O_NOFOLLOW, regular-file only, byte-capped); writes
   use unpredictable same-directory temp files with an atomic rename, so
   nothing follows a symlink and no check-then-open race exists.
