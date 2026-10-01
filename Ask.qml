@@ -1784,7 +1784,11 @@ Item {
 
             Flickable {
               id: connectionScroll
-              anchors.fill: parent
+              anchors.top: parent.top
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: connectionWarning.top
+              anchors.bottomMargin: Style.spacing.panelGap
               contentHeight: connectionColumn.height
               clip: true
               boundsBehavior: Flickable.StopAtBounds
@@ -1959,6 +1963,19 @@ Item {
                   font.pixelSize: Style.font.caption
                 }
               }
+            }
+
+            Text {
+              id: connectionWarning
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              wrapMode: Text.Wrap
+              text: "Local and Cloud use different models. After switching mode, pick and save the correct model in the Settings tab."
+              color: Style.selectedStateColor(root.foreground, root.accent)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.title
+              font.bold: true
             }
           }
 
