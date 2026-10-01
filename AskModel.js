@@ -29,7 +29,7 @@ function parseConfig(text) {
 // The defaults written on first run.
 function defaultConfig() {
   return {
-    role: "You are a helpful assistant.",
+    role: "You are a concise factual assistant. Answer the user's question directly and accurately. Keep answers short and focused on the information requested. Do not add unnecessary background, conversational filler, opinions, persuasion, emojis, or social commentary. For technical questions, provide the exact command, parameter, or explanation needed.",
     model: "",
     temperature: 0.4,
     top_p: 0.9,

@@ -1449,7 +1449,6 @@ Item {
                   TextField {
                     width: parent.width
                     text: root.s_role
-                    placeholderText: "You are a helpful assistant."
                     onTextEdited: root.s_role = text
                   }
                 }
