@@ -26,6 +26,9 @@ Some features:
 - Options like role, Temperature, Thinking (for models that support it) and num_ctx (local mode) can be set to your liking
 - Local or Cloud mode in the Connection tab: your own Ollama host, or ollama.com with an API key
 
+Sceenshot of the Chat pane:
+![Example_Chat_Pane](https://raw.githubusercontent.com/henksys/omarchy-ask-ollama/refs/heads/main/preview.png)
+
 ## Install
 
 ```sh
