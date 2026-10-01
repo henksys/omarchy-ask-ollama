@@ -1974,7 +1974,7 @@ Item {
               text: "Local and Cloud use different models. After switching mode, pick and save the correct model in the Settings tab."
               color: Style.selectedStateColor(root.foreground, root.accent)
               font.family: Style.font.family
-              font.pixelSize: Style.font.title
+              font.pixelSize: 18
               font.bold: true
             }
           }
