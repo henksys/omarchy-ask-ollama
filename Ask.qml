@@ -2019,7 +2019,7 @@ Item {
                 Text {
                   width: parent.width
                   wrapMode: Text.Wrap
-                  text: (root.manifest && root.manifest.description) || "Chat with Ollama from your desktop — ask a question and get an answer, with the conversation shown as a scrollable thread."
+                  text: (root.manifest && root.manifest.description) || "Chat with Ollama — local models or ollama.com cloud — from the desktop"
                   color: Qt.darker(root.foreground, 1.4)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.body

@@ -6,7 +6,7 @@
   "releaseDate": "2026-10-01",
   "author": "Henk",
   "license": "MIT",
-  "description": "Chat with local Ollama models from the desktop",
+  "description": "Chat with Ollama — local models or ollama.com cloud — from the desktop",
   "kinds": [
     "panel"
   ],
