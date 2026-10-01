@@ -1965,17 +1965,30 @@ Item {
               }
             }
 
-            Text {
+            Rectangle {
               id: connectionWarning
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.bottom: parent.bottom
-              wrapMode: Text.Wrap
-              text: "Local and Cloud use different models. After switching mode, pick and save the correct model in the Settings tab."
-              color: Style.selectedStateColor(root.foreground, root.accent)
-              font.family: Style.font.family
-              font.pixelSize: 18
-              font.bold: true
+              radius: Style.cornerRadius
+              color: Style.selectedFillFor(root.foreground, root.accent)
+              implicitHeight: connectionWarningText.implicitHeight + Style.spacing.xl * 2
+
+              Text {
+                id: connectionWarningText
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Style.spacing.xl
+                anchors.rightMargin: Style.spacing.xl
+                wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignHCenter
+                text: "Local and Cloud use different models. After switching mode, pick and save the correct model in the Settings tab."
+                color: Style.selectedStateColor(root.foreground, root.accent)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.display
+                font.bold: true
+              }
             }
           }
 
