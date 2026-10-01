@@ -6,7 +6,7 @@
   "releaseDate": "2026-10-01",
   "author": "Henk",
   "license": "MIT",
-  "description": "Chat with Ollama — local models or ollama.com cloud — from the desktop",
+  "description": "Chat with Ollama — local models or ollama.com cloud — from the desktop. You can use this with or without a local Ollama installation. If you use it with your local Ollama installation you do not require an API key. If you do not have Ollama installed locally, you can use the free cloud models - with the free credits that come with your Ollama account - with your Ollama API key.",
   "kinds": [
     "panel"
   ],
