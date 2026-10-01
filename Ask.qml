@@ -36,6 +36,7 @@ Item {
   property bool apiStdoutDone: false
   property bool apiExited: false
   property int apiExitCode: 0
+  property bool apiCancelled: false
   property bool configReadDone: false
   property bool historyReadDone: false
   property bool savedFlash: false
@@ -344,6 +345,8 @@ Item {
     root.apiStdoutDone = false
     root.apiExited = false
     root.apiExitCode = 0
+    root.apiCancelled = false
+    cancelFallback.stop()
 
     // The request body goes to curl over stdin; nothing sensitive is passed
     // as a command-line argument. curl enforces connect/time/size limits so
@@ -363,6 +366,10 @@ Item {
   function onKeyRead(text) {
     if (root.keyReadDone) return
     root.keyReadDone = true
+    if (root.apiCancelled) {
+      root.finishCancelled()
+      return
+    }
     var key = String(text || "").trim()
     if (!key) {
       root.busy = false
@@ -430,6 +437,16 @@ Item {
   function finishApi(exitCode) {
     // Guarded by apiStdoutDone/apiExited so a single response is processed
     // exactly once regardless of stream-finished vs exited signal order.
+    // A late callback after a cancel is dropped.
+    if (!root.busy) {
+      root.apiStdout = ""
+      root.apiStderr = ""
+      return
+    }
+    if (root.apiCancelled) {
+      root.finishCancelled()
+      return
+    }
     root.busy = false
     apiWatchdog.stop()
     if (exitCode !== 0 && root.apiStdout === "") {
@@ -453,6 +470,30 @@ Item {
     }
     root.apiStdout = ""
     root.apiStderr = ""
+    Qt.callLater(function() { inputField.forceActiveFocus() })
+  }
+
+  // User-initiated cancel: stop the in-flight curl and let the normal exit
+  // path (finishApi) report the cancellation. During Cloud's key/header
+  // pre-flight there is no curl yet; those callbacks see apiCancelled and
+  // finish instead.
+  function cancelRequest() {
+    if (!root.busy || root.apiCancelled) return
+    root.apiCancelled = true
+    apiWatchdog.stop()
+    if (apiProc.running) apiProc.signal(9)
+    cancelFallback.restart()
+  }
+
+  function finishCancelled() {
+    if (!root.busy) return
+    cancelFallback.stop()
+    apiWatchdog.stop()
+    root.apiCancelled = false
+    root.busy = false
+    root.apiStdout = ""
+    root.apiStderr = ""
+    root.setLastAnswer("Request cancelled.", false)
     Qt.callLater(function() { inputField.forceActiveFocus() })
   }
 
@@ -1011,6 +1052,7 @@ Item {
         return
       }
       if (t === "connection") root.launchConnRequest(root.headerFile)
+      else if (root.apiCancelled || !root.busy) root.finishCancelled()
       else root.launchChatRequest()
     }
   }
@@ -1096,6 +1138,14 @@ Item {
       root.setLastAnswer("Request timed out.", true)
       Qt.callLater(function() { inputField.forceActiveFocus() })
     }
+  }
+
+  // Cancel safety net: if a killed process never reports its exit, force the
+  // cancelled state so the panel cannot stay stuck on "Cancel".
+  Timer {
+    id: cancelFallback
+    interval: 2000
+    onTriggered: root.finishCancelled()
   }
 
   Timer {
@@ -1326,12 +1376,11 @@ Item {
                 id: sendButton
                 width: Style.space(96)
                 height: Style.spacing.controlHeight
-                text: root.busy ? "..." : "Send"
+                text: root.busy ? "Cancel" : "Send"
                 fontFamily: Style.font.family
                 fontSize: Style.font.body
                 focusable: true
-                enabled: !root.busy
-                onClicked: root.send()
+                onClicked: root.busy ? root.cancelRequest() : root.send()
               }
 
               Button {

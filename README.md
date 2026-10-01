@@ -2,7 +2,7 @@
 
 ### Ask Ollama
 
-**Current Version:** 1.1.0
+**Current Version:** 1.1.6
 
 Chat with Ollama from your desktop — ask a question and get an answer in a pane
 that appears in the middle of your screen, with the conversation shown as a
